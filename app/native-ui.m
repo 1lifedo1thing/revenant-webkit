@@ -805,6 +805,27 @@ static void correctPinnedLayersBeforeCommit(CFRunLoopObserverRef observer, CFRun
     BOOL _styleInjected;
 }
 
+static unsigned long long bytecodeCacheLimitBytes(void)
+{
+    // The compiled form of one of this site's bundles is seven megabytes for a
+    // two megabyte source, so a thirty two megabyte cache holds four of them and
+    // misses everything else - measured, one hit against forty three misses.
+    // The disk has room; the limit does not need to pretend otherwise. A number
+    // written into the switch file overrides this.
+    unsigned long long megabytes = 192;
+    FILE *file = fopen("/tmp/native-bytecode-cache", "r");
+    if (file) {
+        char line[32];
+        if (fgets(line, sizeof(line), file)) {
+            unsigned long long asked = strtoull(line, NULL, 10);
+            if (asked >= 8 && asked <= 2048)
+                megabytes = asked;
+        }
+        fclose(file);
+    }
+    return megabytes * 1024ULL * 1024ULL;
+}
+
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options
 {
     logLine(@"launched, WebView class %@, frameworks %s",
@@ -914,7 +935,7 @@ static void correctPinnedLayersBeforeCommit(CFRunLoopObserverRef observer, CFRun
         [[NSFileManager defaultManager] createDirectoryAtPath:directory
             withIntermediateDirectories:YES attributes:nil error:NULL];
         ((void (*)(id, SEL, id, unsigned long long))objc_msgSend)(bytecodeWebView,
-            @selector(_setJavaScriptBytecodeCacheDirectory:maximumSize:), directory, 32ULL * 1024 * 1024);
+            @selector(_setJavaScriptBytecodeCacheDirectory:maximumSize:), directory, bytecodeCacheLimitBytes());
         logLine(@"bytecode cache at %@", directory);
     }
 
@@ -2506,6 +2527,10 @@ static void *webThreadSampler(void *unused)
             // pauses it was measuring - eleven seconds became five with it off.
             // The addresses resolve offline against dist/unstripped using the
             // image bases the application logs at launch.
+            // The moment the sample was taken, so a profile can be lined up
+            // against what the page reports about itself. The page measures in
+            // milliseconds since 1970; this is the same clock.
+            fprintf(log, "%.0f ", (CFAbsoluteTimeGetCurrent() + 978307200.0) * 1000.0);
             for (int i = 0; i < depth; i++)
                 fprintf(log, "%s%p", i ? ";" : "", (void *)frames[i]);
             // The library the top frame belongs to, when it is not one of ours.
