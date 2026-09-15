@@ -1,7 +1,6 @@
 from conan import ConanFile
-from conan.tools.gnu import Autotools, AutotoolsToolchain
-from conan.tools.files import copy, chdir
-from conan.tools.layout import basic_layout
+from conan.tools.cmake import CMake, CMakeDeps, CMakeToolchain, cmake_layout
+from conan.tools.files import copy, rmdir
 from conan.tools.scm import Git
 import os
 
@@ -10,53 +9,65 @@ class LibXsltConan(ConanFile):
     name = "libxslt"
     user = "ios6"
     channel = "stable"
-    description = "XSLT and EXSLT, built against the libxml2 the SDK already ships"
+    description = "XSLT and EXSLT, built against the libxml2 package"
     license = "MIT"
     homepage = "https://gitlab.gnome.org/GNOME/libxslt"
     package_type = "static-library"
     settings = "os", "arch", "compiler", "build_type"
 
+    def configure(self):
+        self.settings.rm_safe("compiler.cppstd")
+        self.settings.rm_safe("compiler.libcxx")
+
+    def requirements(self):
+        self.requires("libxml2/2.15.4@ios6/stable", transitive_headers=True)
+
     def layout(self):
-        basic_layout(self, src_folder="src")
+        cmake_layout(self, src_folder="src")
 
     def source(self):
         source = self.conan_data["sources"][self.version]
         Git(self).fetch_commit(source["url"], source["commit"])
 
     def generate(self):
-        sdk = self.conf.get("tools.apple:sdk_path")
-        tc = AutotoolsToolchain(self)
-        tc.configure_args += [
-            "--disable-shared", "--enable-static",
-            "--without-python", "--without-crypto", "--without-plugins",
-            "--without-debugger", "--without-debug", "--without-profiler",
-        ]
-        # libxml2 comes from the SDK rather than from a package: the system one
-        # is what WebCore links against at runtime on the device.
-        tc.extra_cflags.append("-Wno-incompatible-function-pointer-types")
-        env = tc.environment()
-        env.define("LIBXML_CFLAGS", f"-I{sdk}/usr/include/libxml2")
-        env.define("LIBXML_LIBS", "-lxml2")
-        tc.generate(env)
+        tc = CMakeToolchain(self)
+        tc.cache_variables.update({
+            "BUILD_SHARED_LIBS": False,
+            "LIBXSLT_WITH_PROGRAMS": False,
+            "LIBXSLT_WITH_TESTS": False,
+            "LIBXSLT_WITH_PYTHON": False,
+            "LIBXSLT_WITH_PROFILER": False,
+            "LIBXSLT_WITH_DEBUGGER": False,
+            "LIBXSLT_WITH_CRYPTO": False,
+            "LIBXSLT_WITH_MODULES": False,
+        })
+        tc.extra_cflags.append("-fvisibility=hidden")
+        tc.generate()
+        CMakeDeps(self).generate()
 
     def build(self):
-        with chdir(self, self.source_folder):
-            if os.path.exists(os.path.join(self.source_folder, "autogen.sh")):
-                self.run("NOCONFIGURE=1 ./autogen.sh")
-        autotools = Autotools(self)
-        autotools.configure()
-        autotools.make()
+        cmake = CMake(self)
+        cmake.configure()
+        cmake.build()
 
     def package(self):
         copy(self, "Copyright", self.source_folder, os.path.join(self.package_folder, "licenses"))
-        for header_dir in ("libxslt", "libexslt"):
-            for root in (self.source_folder, self.build_folder):
-                copy(self, "*.h", os.path.join(root, header_dir),
-                     os.path.join(self.package_folder, "include", header_dir))
-            copy(self, f"{header_dir}/*.h", self.build_folder,
-                 os.path.join(self.package_folder, "include"))
-        copy(self, "*.a", self.build_folder, os.path.join(self.package_folder, "lib"), keep_path=False)
+        cmake = CMake(self)
+        cmake.install()
+        for folder in ("cmake", "pkgconfig"):
+            rmdir(self, os.path.join(self.package_folder, "lib", folder))
+        rmdir(self, os.path.join(self.package_folder, "share"))
+        rmdir(self, os.path.join(self.package_folder, "bin"))
 
     def package_info(self):
-        self.cpp_info.libs = ["exslt", "xslt"]
-        self.cpp_info.system_libs = ["xml2"]
+        self.cpp_info.set_property("cmake_file_name", "LibXslt")
+        xslt = self.cpp_info.components["xslt"]
+        xslt.set_property("cmake_target_name", "LibXslt::LibXslt")
+        xslt.libs = ["xslt"]
+        xslt.defines = ["LIBXSLT_STATIC"]
+        xslt.requires = ["libxml2::libxml2"]
+        exslt = self.cpp_info.components["exslt"]
+        exslt.set_property("cmake_target_name", "LibXslt::LibExslt")
+        exslt.libs = ["exslt"]
+        exslt.defines = ["LIBEXSLT_STATIC"]
+        exslt.requires = ["xslt"]
